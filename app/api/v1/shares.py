@@ -3,12 +3,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from app.api.deps import get_current_user
+from app.repositories.share_comment_repository import ShareCommentRepository
 from app.repositories.share_repository import ShareRepository
 from app.repositories.task_repository import TaskRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import AuthUser
 from app.schemas.common import error_response, success_response
 from app.schemas.share import ReciprocalShareRequest, ShareCreateRequest, ShareUpdateRequest
+from app.schemas.share_comment import ShareCommentCreateRequest
 from app.services.share_service import ShareService
 
 router = APIRouter()
@@ -25,6 +27,7 @@ def get_share_service(
         share_repository,
         TaskRepository(),
         UserRepository(),
+        ShareCommentRepository(),
     )
 
 
@@ -46,6 +49,35 @@ def get_incoming_share(
 ):
     share = service.get_incoming_share(share_id, current_user.id, current_user.email)
     return success_response(share)
+
+
+@router.get("/incoming/{share_id}/comments")
+def list_share_comments(
+    share_id: str,
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    service: Annotated[ShareService, Depends(get_share_service)],
+):
+    comments = service.list_share_comments(
+        share_id, current_user.id, current_user.email
+    )
+    return success_response(comments)
+
+
+@router.post("/incoming/{share_id}/comments")
+def create_share_comment(
+    share_id: str,
+    body: ShareCommentCreateRequest,
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    service: Annotated[ShareService, Depends(get_share_service)],
+):
+    comment = service.create_share_comment(
+        share_id,
+        current_user.id,
+        current_user.email,
+        current_user.name,
+        body,
+    )
+    return success_response(comment, "Comment posted", status_code=201)
 
 
 @router.get("/incoming/{share_id}/data")
@@ -76,6 +108,35 @@ def create_share(
 ):
     result = service.create_share(current_user.id, body)
     return success_response(result, "Share created", status_code=201)
+
+
+@router.get("/{share_id}/comments")
+def list_outgoing_share_comments(
+    share_id: str,
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    service: Annotated[ShareService, Depends(get_share_service)],
+):
+    comments = service.list_share_comments(
+        share_id, current_user.id, current_user.email
+    )
+    return success_response(comments)
+
+
+@router.post("/{share_id}/comments")
+def create_outgoing_share_comment(
+    share_id: str,
+    body: ShareCommentCreateRequest,
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    service: Annotated[ShareService, Depends(get_share_service)],
+):
+    comment = service.create_share_comment(
+        share_id,
+        current_user.id,
+        current_user.email,
+        current_user.name,
+        body,
+    )
+    return success_response(comment, "Comment posted", status_code=201)
 
 
 @router.patch("/{share_id}")

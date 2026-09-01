@@ -8,6 +8,10 @@ from datetime import UTC, date, datetime, timedelta
 from urllib.parse import unquote
 
 from app.core.exceptions import AppError
+from app.repositories.share_comment_repository import (
+    ShareCommentRepository,
+    make_thread_key,
+)
 from app.repositories.share_repository import ShareRepository
 from app.repositories.task_repository import TaskRepository
 from app.repositories.user_repository import UserRepository
@@ -17,6 +21,7 @@ from app.schemas.share import (
     ShareCreateRequest,
     ShareUpdateRequest,
 )
+from app.schemas.share_comment import ShareCommentCreateRequest
 from app.services.analytics_service import build_analytics
 from app.utils.datetime import ensure_utc
 from app.utils.periods import normalize_completion_log, to_date_key
@@ -153,10 +158,12 @@ class ShareService:
         share_repository: ShareRepository,
         task_repository: TaskRepository,
         user_repository: UserRepository,
+        comment_repository: ShareCommentRepository | None = None,
     ) -> None:
         self._shares = share_repository
         self._tasks = task_repository
         self._users = user_repository
+        self._comments = comment_repository or ShareCommentRepository()
 
     def list_shares(self, owner_id: str) -> list[dict]:
         return self._shares.list_by_owner(owner_id)
@@ -436,3 +443,72 @@ class ShareService:
             )
 
         return normalized
+
+    def list_share_comments(
+        self, share_id: str, viewer_id: str, viewer_email: str
+    ) -> list[dict]:
+        thread_key = self._resolve_comment_thread(share_id, viewer_id, viewer_email)
+        return self._comments.list_by_thread(thread_key)
+
+    def create_share_comment(
+        self,
+        share_id: str,
+        viewer_id: str,
+        viewer_email: str,
+        viewer_name: str,
+        payload: ShareCommentCreateRequest,
+    ) -> dict:
+        thread_key = self._resolve_comment_thread(share_id, viewer_id, viewer_email)
+        body = payload.body.strip()
+        if not body:
+            raise AppError("Comment cannot be empty.", status_code=400, code="VALIDATION_ERROR")
+
+        try:
+            return self._comments.create(
+                thread_key=thread_key,
+                author_id=viewer_id,
+                author_name=viewer_name,
+                body=body,
+                parent_id=payload.parent_id,
+            )
+        except ValueError as exc:
+            raise AppError(str(exc), status_code=400, code="VALIDATION_ERROR") from exc
+
+    def _resolve_comment_thread(
+        self, share_id: str, viewer_id: str, viewer_email: str
+    ) -> str:
+        share_doc = self._shares.find_for_recipient(share_id, viewer_email)
+        partner_id: str | None = None
+        partner_email: str | None = None
+
+        if share_doc:
+            partner_id = share_doc["owner_id"]
+            partner_email = share_doc.get("owner_email")
+        else:
+            owner_share = self._shares.find_by_id(viewer_id, share_id)
+            if owner_share:
+                partner_email = owner_share.get("recipientEmail")
+                if partner_email:
+                    partner = self._users.find_by_email(partner_email)
+                    partner_id = partner.id if partner else None
+
+        if not partner_id or not partner_email:
+            raise AppError("Share not found.", status_code=404, code="SHARE_NOT_FOUND")
+
+        viewer = self._users.find_by_id(viewer_id)
+        if not viewer:
+            raise AppError("User not found.", status_code=404, code="NOT_FOUND")
+
+        if not self._shares.users_have_active_relationship(
+            viewer_id,
+            viewer.email,
+            partner_id,
+            partner_email,
+        ):
+            raise AppError(
+                "You no longer have an active share with this person.",
+                status_code=403,
+                code="SHARE_FORBIDDEN",
+            )
+
+        return make_thread_key(viewer_id, partner_id)

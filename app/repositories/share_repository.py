@@ -116,6 +116,19 @@ class ShareRepository:
     def has_active_share_to(self, owner_id: str, recipient_email: str) -> bool:
         return self.find_active_by_pair(owner_id, recipient_email) is not None
 
+    def users_have_active_relationship(
+        self,
+        user_a_id: str,
+        user_a_email: str,
+        user_b_id: str,
+        user_b_email: str,
+    ) -> bool:
+        b_email = user_b_email.lower()
+        a_email = user_a_email.lower()
+        if self.find_active_by_pair(user_a_id, b_email):
+            return True
+        return self.find_active_by_pair(user_b_id, a_email) is not None
+
     def create(
         self,
         owner_id: str,
