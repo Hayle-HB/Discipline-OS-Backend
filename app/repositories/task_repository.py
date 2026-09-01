@@ -116,6 +116,11 @@ class TaskRepository:
         period = doc["period"]
         period_key = get_period_log_key(ref_date, period)
         log = normalize_completion_log(doc.get("completion_log"))
+        previous = log.get(period_key)
+
+        if previous and previous.get("status") == status:
+            refreshed = self._find_raw(user_id, task_id)
+            return self._to_api_dict(refreshed) if refreshed else None
 
         if status == "done":
             entry = {
