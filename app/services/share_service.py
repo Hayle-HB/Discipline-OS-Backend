@@ -11,7 +11,12 @@ from app.core.exceptions import AppError
 from app.repositories.share_repository import ShareRepository
 from app.repositories.task_repository import TaskRepository
 from app.repositories.user_repository import UserRepository
-from app.schemas.share import VALID_SHARE_RESOURCES, ShareCreateRequest
+from app.schemas.share import (
+    VALID_SHARE_RESOURCES,
+    ReciprocalShareRequest,
+    ShareCreateRequest,
+    ShareUpdateRequest,
+)
 from app.services.analytics_service import build_analytics
 from app.utils.datetime import ensure_utc
 from app.utils.periods import normalize_completion_log, to_date_key
@@ -158,7 +163,21 @@ class ShareService:
 
     def list_incoming_shares(self, viewer_id: str, viewer_email: str) -> list[dict]:
         self._shares.link_recipient_user(viewer_email, viewer_id)
-        return self._shares.list_by_recipient(viewer_email)
+        incoming = self._shares.list_by_recipient(viewer_email)
+        results: list[dict] = []
+        for share in incoming:
+            owner_email = share.get("ownerEmail")
+            already_sharing_back = False
+            if owner_email:
+                already_sharing_back = self._shares.has_active_share_to(
+                    viewer_id, owner_email
+                )
+            share["reciprocalPending"] = bool(
+                share.get("reciprocalPending")
+                and not already_sharing_back
+            )
+            results.append(share)
+        return results
 
     def create_share(self, owner_id: str, payload: ShareCreateRequest) -> dict:
         owner = self._users.find_by_id(owner_id)
@@ -178,6 +197,7 @@ class ShareService:
         if payload.expires_in_days:
             expires_at = datetime.now(UTC) + timedelta(days=payload.expires_in_days)
 
+        existing_before = self._shares.find_active_by_pair(owner_id, recipient)
         token = secrets.token_urlsafe(32)
         share = self._shares.create(
             owner_id,
@@ -187,19 +207,94 @@ class ShareService:
             resources=resources,
             token_hash=_hash_token(token),
             expires_at=expires_at,
+            reciprocal_requested=payload.request_reciprocal_access,
         )
 
         return {
             "share": share,
-            "shareToken": token,
-            "sharePath": f"/shared/{token}",
+            "shareToken": None if existing_before else token,
+            "sharePath": None if existing_before else f"/shared/{token}",
+            "updated": existing_before is not None,
         }
+
+    def update_share(
+        self, owner_id: str, share_id: str, payload: ShareUpdateRequest
+    ) -> dict:
+        resources = self._normalize_resources(payload.resources)
+        expires_at = None
+        update_expiration = payload.expires_in_days is not None
+        if payload.expires_in_days:
+            expires_at = datetime.now(UTC) + timedelta(days=payload.expires_in_days)
+
+        updated = self._shares.update_share(
+            owner_id,
+            share_id,
+            resources=resources,
+            expires_at=expires_at,
+            update_expiration=update_expiration,
+        )
+        if not updated:
+            raise AppError("Share not found.", status_code=404, code="NOT_FOUND")
+        return updated
+
+    def respond_reciprocal_share(
+        self,
+        share_id: str,
+        viewer_id: str,
+        viewer_email: str,
+        payload: ReciprocalShareRequest,
+    ) -> dict:
+        share_doc = self._resolve_recipient_share(share_id, viewer_id, viewer_email)
+        owner_email = share_doc.get("owner_email")
+        if not owner_email:
+            raise AppError("Share owner not found.", status_code=404, code="NOT_FOUND")
+
+        self._shares.mark_reciprocal_responded(share_id)
+
+        if not payload.accept:
+            return {"accepted": False, "share": None}
+
+        if not payload.resources:
+            raise AppError(
+                "Select at least one resource to share.",
+                status_code=400,
+                code="VALIDATION_ERROR",
+            )
+
+        if self._shares.has_active_share_to(viewer_id, owner_email):
+            return {"accepted": True, "share": None, "alreadyShared": True}
+
+        viewer = self._users.find_by_id(viewer_id)
+        if not viewer:
+            raise AppError("User not found.", status_code=404, code="NOT_FOUND")
+
+        resources = self._normalize_resources(payload.resources)
+        reciprocal = self._shares.create(
+            viewer_id,
+            owner_name=viewer.name,
+            owner_email=viewer.email,
+            recipient_email=owner_email,
+            resources=resources,
+            token_hash=_hash_token(secrets.token_urlsafe(32)),
+            expires_at=None,
+            reciprocal_requested=False,
+        )
+        return {"accepted": True, "share": reciprocal}
 
     def revoke_share(self, owner_id: str, share_id: str) -> bool:
         return self._shares.revoke(owner_id, share_id)
 
     def get_incoming_share(self, share_id: str, viewer_id: str, viewer_email: str) -> dict:
         share_doc = self._resolve_recipient_share(share_id, viewer_id, viewer_email)
+        owner_email = share_doc.get("owner_email")
+        already_sharing_back = False
+        if owner_email:
+            already_sharing_back = self._shares.has_active_share_to(viewer_id, owner_email)
+        reciprocal_pending = bool(
+            share_doc.get("reciprocal_requested")
+            and not share_doc.get("reciprocal_responded")
+            and not already_sharing_back
+        )
         return {
             "id": str(share_doc["_id"]),
             "ownerId": share_doc["owner_id"],
@@ -216,6 +311,7 @@ class ShareService:
             else None,
             "createdAt": share_doc["created_at"].isoformat(),
             "updatedAt": share_doc["updated_at"].isoformat(),
+            "reciprocalPending": reciprocal_pending,
         }
 
     def get_incoming_share_data(

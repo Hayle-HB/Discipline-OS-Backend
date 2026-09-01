@@ -61,8 +61,17 @@ class ShareRepository:
             )
 
     def list_by_owner(self, owner_id: str) -> list[dict]:
-        cursor = self._collection.find({"owner_id": owner_id}).sort("created_at", -1)
-        return [self._to_api_dict(doc) for doc in cursor]
+        cursor = self._collection.find(
+            {"owner_id": owner_id, "status": "active"}
+        ).sort("updated_at", -1)
+        grouped: dict[str, dict] = {}
+        for doc in cursor:
+            key = doc["recipient_email"].lower()
+            if key not in grouped:
+                grouped[key] = doc
+                continue
+            grouped[key] = self._merge_share_docs(grouped[key], doc)
+        return [self._to_api_dict(doc) for doc in grouped.values()]
 
     def list_by_recipient(self, recipient_email: str) -> list[dict]:
         cursor = self._collection.find(
@@ -70,15 +79,19 @@ class ShareRepository:
                 "recipient_email": recipient_email.lower(),
                 "status": "active",
             }
-        ).sort("created_at", -1)
+        ).sort("updated_at", -1)
         now = datetime.now(UTC)
-        results: list[dict] = []
+        grouped: dict[str, dict] = {}
         for doc in cursor:
             expires_at = doc.get("expires_at")
             if expires_at and ensure_utc(expires_at) < now:
                 continue
-            results.append(self._to_incoming_dict(doc))
-        return results
+            key = doc["owner_id"]
+            if key not in grouped:
+                grouped[key] = doc
+                continue
+            grouped[key] = self._merge_share_docs(grouped[key], doc)
+        return [self._to_incoming_dict(doc) for doc in grouped.values()]
 
     def find_by_id(self, owner_id: str, share_id: str) -> dict | None:
         doc = self._find_raw(owner_id, share_id)
@@ -91,6 +104,18 @@ class ShareRepository:
     def find_by_token_hash(self, token_hash: str) -> dict | None:
         return self._collection.find_one({"token_hash": token_hash})
 
+    def find_active_by_pair(self, owner_id: str, recipient_email: str) -> dict | None:
+        return self._collection.find_one(
+            {
+                "owner_id": owner_id,
+                "recipient_email": recipient_email.lower(),
+                "status": "active",
+            }
+        )
+
+    def has_active_share_to(self, owner_id: str, recipient_email: str) -> bool:
+        return self.find_active_by_pair(owner_id, recipient_email) is not None
+
     def create(
         self,
         owner_id: str,
@@ -101,7 +126,19 @@ class ShareRepository:
         resources: list[dict],
         token_hash: str | None,
         expires_at: datetime | None,
+        reciprocal_requested: bool = False,
     ) -> dict:
+        existing = self.find_active_by_pair(owner_id, recipient_email)
+        if existing:
+            return self._update_existing_share(
+                existing,
+                owner_name=owner_name,
+                owner_email=owner_email,
+                resources=resources,
+                expires_at=expires_at,
+                reciprocal_requested=reciprocal_requested,
+            )
+
         now = datetime.now(UTC)
         document = {
             "owner_id": owner_id,
@@ -113,12 +150,58 @@ class ShareRepository:
             "token_hash": token_hash,
             "status": "active",
             "expires_at": expires_at,
+            "reciprocal_requested": reciprocal_requested,
+            "reciprocal_responded": False,
             "created_at": now,
             "updated_at": now,
         }
         result = self._collection.insert_one(document)
         document["_id"] = result.inserted_id
         return self._to_api_dict(document)
+
+    def update_share(
+        self,
+        owner_id: str,
+        share_id: str,
+        *,
+        resources: list[dict],
+        expires_at: datetime | None = None,
+        update_expiration: bool = False,
+    ) -> dict | None:
+        doc = self._find_raw(owner_id, share_id)
+        if not doc or doc.get("status") != "active":
+            return None
+
+        updates: dict = {
+            "resources": resources,
+            "updated_at": datetime.now(UTC),
+        }
+        if update_expiration:
+            updates["expires_at"] = expires_at
+
+        self._collection.update_one({"_id": doc["_id"]}, {"$set": updates})
+        self._revoke_duplicate_active_shares(
+            owner_id,
+            doc["recipient_email"],
+            keep_id=doc["_id"],
+        )
+        updated = self._collection.find_one({"_id": doc["_id"]})
+        return self._to_api_dict(updated) if updated else None
+
+    def mark_reciprocal_responded(self, share_id: str) -> None:
+        try:
+            oid = ObjectId(share_id)
+        except InvalidId:
+            return
+        self._collection.update_one(
+            {"_id": oid},
+            {
+                "$set": {
+                    "reciprocal_responded": True,
+                    "updated_at": datetime.now(UTC),
+                }
+            },
+        )
 
     def revoke(self, owner_id: str, share_id: str) -> bool:
         doc = self._find_raw(owner_id, share_id)
@@ -176,6 +259,8 @@ class ShareRepository:
             "expiresAt": doc["expires_at"].isoformat() if doc.get("expires_at") else None,
             "createdAt": doc["created_at"].isoformat(),
             "updatedAt": doc["updated_at"].isoformat(),
+            "requestReciprocalAccess": bool(doc.get("reciprocal_requested")),
+            "reciprocalResponded": bool(doc.get("reciprocal_responded")),
         }
 
     def _to_incoming_dict(self, doc: dict) -> dict:
@@ -189,6 +274,9 @@ class ShareRepository:
             "expiresAt": doc["expires_at"].isoformat() if doc.get("expires_at") else None,
             "createdAt": doc["created_at"].isoformat(),
             "updatedAt": doc["updated_at"].isoformat(),
+            "reciprocalPending": bool(
+                doc.get("reciprocal_requested") and not doc.get("reciprocal_responded")
+            ),
         }
 
     @staticmethod
@@ -200,3 +288,89 @@ class ShareRepository:
             }
             for resource in doc.get("resources", [])
         ]
+
+    @staticmethod
+    def _merge_resources(
+        left: list[dict], right: list[dict]
+    ) -> list[dict]:
+        merged: dict[str, dict] = {}
+        for resource in [*left, *right]:
+            name = resource.get("name")
+            if name:
+                merged[name] = {
+                    "name": name,
+                    "permission": resource.get("permission", "view"),
+                }
+        return list(merged.values())
+
+    def _merge_share_docs(self, primary: dict, secondary: dict) -> dict:
+        merged = dict(primary)
+        merged["resources"] = self._merge_resources(
+            primary.get("resources", []),
+            secondary.get("resources", []),
+        )
+        merged["reciprocal_requested"] = bool(
+            primary.get("reciprocal_requested") or secondary.get("reciprocal_requested")
+        )
+        merged["reciprocal_responded"] = bool(
+            primary.get("reciprocal_responded") or secondary.get("reciprocal_responded")
+        )
+        primary_updated = primary.get("updated_at")
+        secondary_updated = secondary.get("updated_at")
+        if secondary_updated and (
+            not primary_updated or secondary_updated > primary_updated
+        ):
+            merged["_id"] = secondary["_id"]
+            merged["updated_at"] = secondary_updated
+        return merged
+
+    def _update_existing_share(
+        self,
+        existing: dict,
+        *,
+        owner_name: str,
+        owner_email: str,
+        resources: list[dict],
+        expires_at: datetime | None,
+        reciprocal_requested: bool,
+    ) -> dict:
+        now = datetime.now(UTC)
+        merged_resources = resources
+        updates: dict = {
+            "owner_name": owner_name.strip(),
+            "owner_email": owner_email.lower(),
+            "resources": merged_resources,
+            "updated_at": now,
+            "status": "active",
+        }
+        if expires_at is not None:
+            updates["expires_at"] = expires_at
+        if reciprocal_requested:
+            updates["reciprocal_requested"] = True
+
+        self._collection.update_one({"_id": existing["_id"]}, {"$set": updates})
+        self._revoke_duplicate_active_shares(
+            existing["owner_id"],
+            existing["recipient_email"],
+            keep_id=existing["_id"],
+        )
+        updated = self._collection.find_one({"_id": existing["_id"]})
+        return self._to_api_dict(updated) if updated else self._to_api_dict(existing)
+
+    def _revoke_duplicate_active_shares(
+        self,
+        owner_id: str,
+        recipient_email: str,
+        *,
+        keep_id: ObjectId,
+    ) -> None:
+        now = datetime.now(UTC)
+        self._collection.update_many(
+            {
+                "owner_id": owner_id,
+                "recipient_email": recipient_email.lower(),
+                "status": "active",
+                "_id": {"$ne": keep_id},
+            },
+            {"$set": {"status": "revoked", "updated_at": now}},
+        )

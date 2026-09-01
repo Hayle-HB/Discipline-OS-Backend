@@ -8,7 +8,7 @@ from app.repositories.task_repository import TaskRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import AuthUser
 from app.schemas.common import error_response, success_response
-from app.schemas.share import ShareCreateRequest
+from app.schemas.share import ReciprocalShareRequest, ShareCreateRequest, ShareUpdateRequest
 from app.services.share_service import ShareService
 
 router = APIRouter()
@@ -76,6 +76,31 @@ def create_share(
 ):
     result = service.create_share(current_user.id, body)
     return success_response(result, "Share created", status_code=201)
+
+
+@router.patch("/{share_id}")
+def update_share(
+    share_id: str,
+    body: ShareUpdateRequest,
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    service: Annotated[ShareService, Depends(get_share_service)],
+):
+    updated = service.update_share(current_user.id, share_id, body)
+    return success_response(updated, "Share updated")
+
+
+@router.post("/incoming/{share_id}/reciprocal")
+def respond_reciprocal_share(
+    share_id: str,
+    body: ReciprocalShareRequest,
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    service: Annotated[ShareService, Depends(get_share_service)],
+):
+    result = service.respond_reciprocal_share(
+        share_id, current_user.id, current_user.email, body
+    )
+    message = "Reciprocal share created" if result.get("accepted") else "Request dismissed"
+    return success_response(result, message)
 
 
 @router.delete("/{share_id}")

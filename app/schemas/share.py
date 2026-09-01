@@ -26,6 +26,21 @@ class ShareCreateRequest(BaseModel):
     recipient_email: EmailStr = Field(alias="recipientEmail")
     resources: list[ShareResourceInput] = Field(min_length=1)
     expires_in_days: int | None = Field(default=None, alias="expiresInDays", ge=1, le=365)
+    request_reciprocal_access: bool = Field(default=False, alias="requestReciprocalAccess")
+
+
+class ShareUpdateRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    resources: list[ShareResourceInput] = Field(min_length=1)
+    expires_in_days: int | None = Field(default=None, alias="expiresInDays", ge=1, le=365)
+
+
+class ReciprocalShareRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    resources: list[ShareResourceInput] = Field(default_factory=list)
+    accept: bool = True
 
 
 class ShareResponse(BaseModel):
@@ -41,6 +56,8 @@ class ShareResponse(BaseModel):
     expires_at: str | None = Field(default=None, alias="expiresAt")
     created_at: str = Field(alias="createdAt")
     updated_at: str = Field(alias="updatedAt")
+    request_reciprocal_access: bool = Field(default=False, alias="requestReciprocalAccess")
+    reciprocal_responded: bool = Field(default=False, alias="reciprocalResponded")
 
 
 class IncomingShareSummary(BaseModel):
@@ -55,6 +72,7 @@ class IncomingShareSummary(BaseModel):
     expires_at: str | None = Field(default=None, alias="expiresAt")
     created_at: str = Field(alias="createdAt")
     updated_at: str = Field(alias="updatedAt")
+    reciprocal_pending: bool = Field(default=False, alias="reciprocalPending")
 
 
 class ShareCreateResponse(BaseModel):
