@@ -2,7 +2,15 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 VALID_SHARE_RESOURCES = frozenset(
-    {"calendar", "tasks", "habits", "streak", "discipline_score", "analytics"}
+    {
+        "calendar",
+        "tasks",
+        "habits",
+        "streak",
+        "discipline_score",
+        "analytics",
+        "goals",
+    }
 )
 
 

@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from app.api.deps import get_current_user
+from app.repositories.goal_repository import GoalRepository
 from app.repositories.share_comment_repository import ShareCommentRepository
 from app.repositories.share_repository import ShareRepository
 from app.repositories.task_repository import TaskRepository
@@ -28,6 +29,7 @@ def get_share_service(
         TaskRepository(),
         UserRepository(),
         ShareCommentRepository(),
+        GoalRepository(),
     )
 
 

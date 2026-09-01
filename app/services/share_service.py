@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from urllib.parse import unquote
 
 from app.core.exceptions import AppError
+from app.repositories.goal_repository import GoalRepository
 from app.repositories.share_comment_repository import (
     ShareCommentRepository,
     make_thread_key,
@@ -135,7 +136,37 @@ def _build_habits_data(tasks: list[dict]) -> dict:
     return {"tasksByPeriod": grouped}
 
 
-def _build_shared_data(tasks: list[dict], allowed: set[str]) -> dict:
+def _build_goals_data(goals: list[dict]) -> dict:
+    return {
+        "goals": [
+            {
+                "id": goal["id"],
+                "title": goal["title"],
+                "description": goal.get("description"),
+                "why": goal.get("why"),
+                "deadline": goal.get("deadline"),
+                "category": goal.get("category", "personal"),
+                "priority": goal.get("priority", "medium"),
+                "progressPercent": goal.get("progressPercent", 0),
+                "tasksTotal": goal.get("tasksTotal", 0),
+                "tasksCompleted": goal.get("tasksCompleted", 0),
+                "daysRemaining": goal.get("daysRemaining"),
+                "tasks": [
+                    {
+                        "id": task["id"],
+                        "title": task["title"],
+                        "description": task.get("description"),
+                        "completed": bool(task.get("completed")),
+                    }
+                    for task in goal.get("tasks", [])
+                ],
+            }
+            for goal in goals
+        ]
+    }
+
+
+def _build_shared_data(tasks: list[dict], allowed: set[str], goals: list[dict] | None = None) -> dict:
     data: dict = {}
     if "calendar" in allowed:
         data["calendar"] = _build_calendar_data(tasks)
@@ -149,6 +180,8 @@ def _build_shared_data(tasks: list[dict], allowed: set[str]) -> dict:
         data["habits"] = _build_habits_data(tasks)
     if "analytics" in allowed:
         data["analytics"] = build_analytics(tasks)
+    if "goals" in allowed and goals is not None:
+        data["goals"] = _build_goals_data(goals)
     return data
 
 
@@ -159,11 +192,13 @@ class ShareService:
         task_repository: TaskRepository,
         user_repository: UserRepository,
         comment_repository: ShareCommentRepository | None = None,
+        goal_repository: GoalRepository | None = None,
     ) -> None:
         self._shares = share_repository
         self._tasks = task_repository
         self._users = user_repository
         self._comments = comment_repository or ShareCommentRepository()
+        self._goals = goal_repository or GoalRepository()
 
     def list_shares(self, owner_id: str) -> list[dict]:
         return self._shares.list_by_owner(owner_id)
@@ -328,12 +363,17 @@ class ShareService:
         owner_name = share_doc.get("owner_name") or "Discipline OS user"
         tasks = self._tasks.list_by_user(share_doc["owner_id"])
         allowed = {resource["name"] for resource in share_doc.get("resources", [])}
+        goals = (
+            self._goals.list_goals_with_tasks_for_user(share_doc["owner_id"])
+            if "goals" in allowed
+            else None
+        )
         return {
             "shareId": str(share_doc["_id"]),
             "ownerName": owner_name,
             "ownerId": share_doc["owner_id"],
             "resources": sorted(allowed),
-            "data": _build_shared_data(tasks, allowed),
+            "data": _build_shared_data(tasks, allowed, goals),
         }
 
     def get_share_preview(self, token: str, viewer_email: str) -> dict:
@@ -356,10 +396,15 @@ class ShareService:
         owner_name = share_doc.get("owner_name") or "Discipline OS user"
         tasks = self._tasks.list_by_user(share_doc["owner_id"])
         allowed = {resource["name"] for resource in share_doc.get("resources", [])}
+        goals = (
+            self._goals.list_goals_with_tasks_for_user(share_doc["owner_id"])
+            if "goals" in allowed
+            else None
+        )
         return {
             "ownerName": owner_name,
             "resources": sorted(allowed),
-            "data": _build_shared_data(tasks, allowed),
+            "data": _build_shared_data(tasks, allowed, goals),
         }
 
     def _resolve_recipient_share(

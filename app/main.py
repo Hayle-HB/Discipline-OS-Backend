@@ -8,6 +8,7 @@ from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.database import close_client
 from app.core.exceptions import AppError
+from app.repositories.goal_repository import GoalRepository
 from app.repositories.routine_repository import RoutineRepository
 from app.repositories.share_comment_repository import ShareCommentRepository
 from app.repositories.share_repository import ShareRepository
@@ -23,6 +24,8 @@ async def lifespan(_: FastAPI):
     users.seed_demo_user()
     tasks = TaskRepository()
     tasks.ensure_indexes()
+    goals = GoalRepository()
+    goals.ensure_indexes()
     routines = RoutineRepository()
     routines.ensure_indexes()
     shares = ShareRepository()
