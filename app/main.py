@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.core.database import close_client
 from app.core.exceptions import AppError
 from app.repositories.routine_repository import RoutineRepository
+from app.repositories.share_repository import ShareRepository
 from app.repositories.task_repository import TaskRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.common import error_response
@@ -23,6 +24,8 @@ async def lifespan(_: FastAPI):
     tasks.ensure_indexes()
     routines = RoutineRepository()
     routines.ensure_indexes()
+    shares = ShareRepository()
+    shares.ensure_indexes()
     yield
     close_client()
 

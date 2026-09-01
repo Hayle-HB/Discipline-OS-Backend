@@ -1,0 +1,110 @@
+from typing import Annotated
+
+from fastapi import APIRouter, Depends
+
+from app.api.deps import get_current_user
+from app.repositories.share_repository import ShareRepository
+from app.repositories.task_repository import TaskRepository
+from app.repositories.user_repository import UserRepository
+from app.schemas.auth import AuthUser
+from app.schemas.common import error_response, success_response
+from app.schemas.share import ShareCreateRequest
+from app.services.share_service import ShareService
+
+router = APIRouter()
+
+
+def get_share_repository() -> ShareRepository:
+    return ShareRepository()
+
+
+def get_share_service(
+    share_repository: Annotated[ShareRepository, Depends(get_share_repository)],
+) -> ShareService:
+    return ShareService(
+        share_repository,
+        TaskRepository(),
+        UserRepository(),
+    )
+
+
+@router.get("/incoming")
+def list_incoming_shares(
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    service: Annotated[ShareService, Depends(get_share_service)],
+):
+    return success_response(
+        service.list_incoming_shares(current_user.id, current_user.email)
+    )
+
+
+@router.get("/incoming/{share_id}")
+def get_incoming_share(
+    share_id: str,
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    service: Annotated[ShareService, Depends(get_share_service)],
+):
+    share = service.get_incoming_share(share_id, current_user.id, current_user.email)
+    return success_response(share)
+
+
+@router.get("/incoming/{share_id}/data")
+def get_incoming_share_data(
+    share_id: str,
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    service: Annotated[ShareService, Depends(get_share_service)],
+):
+    payload = service.get_incoming_share_data(
+        share_id, current_user.id, current_user.email
+    )
+    return success_response(payload)
+
+
+@router.get("")
+def list_shares(
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    service: Annotated[ShareService, Depends(get_share_service)],
+):
+    return success_response(service.list_shares(current_user.id))
+
+
+@router.post("")
+def create_share(
+    body: ShareCreateRequest,
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    service: Annotated[ShareService, Depends(get_share_service)],
+):
+    result = service.create_share(current_user.id, body)
+    return success_response(result, "Share created", status_code=201)
+
+
+@router.delete("/{share_id}")
+def revoke_share(
+    share_id: str,
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    service: Annotated[ShareService, Depends(get_share_service)],
+):
+    revoked = service.revoke_share(current_user.id, share_id)
+    if not revoked:
+        return error_response("Share not found.", status_code=404, code="NOT_FOUND")
+    return success_response(None, "Share revoked")
+
+
+@router.get("/access/{token}")
+def get_share_preview(
+    token: str,
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    service: Annotated[ShareService, Depends(get_share_service)],
+):
+    preview = service.get_share_preview(token, current_user.email)
+    return success_response(preview)
+
+
+@router.get("/access/{token}/data")
+def get_shared_data(
+    token: str,
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    service: Annotated[ShareService, Depends(get_share_service)],
+):
+    payload = service.get_shared_data(token, current_user.email)
+    return success_response(payload)
